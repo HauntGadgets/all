@@ -1,0 +1,112 @@
+// working code. 20 signals, 30 seconds of record. try to find a more stable power source
+#include <Arduino.h>
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRsend.h>
+#include <IRutils.h>
+#include <EEPROM.h>
+
+IRrecv irrecv(14);  // IR Receiver on GPIO14
+IRsend irsend(4);   // IR Transmitter on GPIO4
+decode_results results;
+
+struct IRCode {
+  uint32_t code;       // For storing the NEC code
+  unsigned long delay; // For storing the time delay
+};
+
+const unsigned long RECORD_TIME = 30000;  // 30 seconds record time
+unsigned long startTime;
+unsigned long signalTimes[20] = {0};  // Array to store timestamps of each signal
+bool recordingEnded = false;
+bool newCodeRecorded = false;
+IRCode irCodes[20];  // Increased array size for 20 codes
+int codesRecorded = 0;
+
+void setup() {
+  Serial.begin(115200);
+  delay(5000); // Delay to ensure Serial Monitor is opened in time
+  EEPROM.begin(sizeof(irCodes));  // Ensure your EEPROM size is sufficient
+  irrecv.enableIRIn();
+  irsend.begin();
+
+  if (!recordingEnded) {
+    EEPROM.get(0, irCodes);
+    startTime = millis();
+    Serial.println("Device started, recording mode for the first 30 seconds.");
+  } else {
+    // Reset variables when in playback mode
+    codesRecorded = 0;
+    newCodeRecorded = false;
+  }
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+
+  // Recording phase
+  if (currentTime - startTime < RECORD_TIME && !recordingEnded) {
+    if (irrecv.decode(&results)) {
+      if (results.decode_type == NEC) {
+        if (codesRecorded < 20) {  // Updated condition for 20 codes
+          signalTimes[codesRecorded] = currentTime; // Capture the time for each signal
+
+          Serial.print("Time delay until signal ");
+          Serial.print(codesRecorded + 1);
+          Serial.print(": ");
+          Serial.print(currentTime - startTime);
+          Serial.println(" ms");
+
+          if (!newCodeRecorded) {
+            memset(irCodes, 0, sizeof(irCodes));
+            newCodeRecorded = true;
+          }
+
+          irCodes[codesRecorded].code = results.value;
+          if (codesRecorded == 0) {
+              irCodes[codesRecorded].delay = currentTime - startTime;
+          } else {
+              irCodes[codesRecorded].delay = currentTime - signalTimes[codesRecorded - 1];
+          }
+          codesRecorded++;
+
+          Serial.print("NEC IR signal received and stored in slot ");
+          Serial.print(codesRecorded);
+          Serial.print(": 0x");
+          Serial.println(results.value, HEX);
+        }
+      }
+      irrecv.resume();
+    }
+  }
+
+  // EEPROM storage
+  if (currentTime - startTime >= RECORD_TIME && newCodeRecorded && !recordingEnded) {
+    EEPROM.put(0, irCodes);
+    EEPROM.commit();
+    recordingEnded = true;
+    Serial.println("Recording phase ended, codes stored in EEPROM.");
+  }
+
+  // Playback phase
+  if (currentTime - startTime >= RECORD_TIME && !recordingEnded) {
+    recordingEnded = true;
+    Serial.println("Playback phase initiated.");
+    for (int i = 0; i < 20; ++i) {  // Updated loop condition for 20 codes
+      if (irCodes[i].code != 0) {
+        Serial.print("Checking slot ");
+        Serial.print(i + 1);
+        Serial.print(", delay: ");
+        Serial.print(irCodes[i].delay);
+        Serial.print(", Playing back NEC signal in slot ");
+        Serial.print(i + 1);
+        Serial.print(": 0x");
+        Serial.print(irCodes[i].code, HEX);
+        Serial.print("  delay: ");
+        Serial.println(irCodes[i].delay);
+        irsend.sendNEC(irCodes[i].code);
+        delay(irCodes[i].delay);
+      }
+    }
+  }
+}
